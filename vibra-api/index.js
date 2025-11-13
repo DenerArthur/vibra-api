@@ -12,62 +12,56 @@ app.get("/", (req, res) => {
   res.json({ status: "Vibra API OK" });
 });
 
+// Instâncias Piped
+const PIPED = [
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.nadeko.net",
+  "https://pipedapi.reallyaweso.me",
+];
+
+async function getPipedAudio(videoId) {
+  for (const base of PIPED) {
+    try {
+      const r = await fetch(`${base}/streams/${videoId}`);
+      if (!r.ok) continue;
+
+      const json = await r.json();
+      console.log("🔵 PIPE RESPONSE:", json);
+
+      if (json?.audioStreams?.length) {
+        const best = json.audioStreams.sort(
+          (a, b) => b.bitrate - a.bitrate
+        )[0];
+
+        if (best?.url) return best.url;
+      }
+    } catch (e) {
+      console.log("Erro Piped:", e);
+      continue;
+    }
+  }
+  return null;
+}
+
 app.post("/audio", async (req, res) => {
-  const { url } = req.body;
+  const { videoId } = req.body;
+
+  if (!videoId) {
+    return res.json({ success: false, error: "videoId ausente." });
+  }
+
+  console.log("🎬 Recebido videoId:", videoId);
+
+  const url = await getPipedAudio(videoId);
 
   if (!url) {
-    return res.json({ success: false, error: "URL ausente." });
-  }
-
-  try {
-    const reqBody = {
-      url,
-      downloadMode: "audio",
-      vCodec: "none"
-    };
-
-    const r = await fetch("https://api.cobalt.tools/api/json", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(reqBody),
-    });
-
-    // Tenta parsear JSON
-    let json;
-    try {
-      json = await r.json();
-    } catch (e) {
-      console.log("⚠️ Cobalt retornou HTML ou resposta inválida:");
-      const text = await r.text();
-      console.log(text);
-
-      return res.status(500).json({
-        success: false,
-        error: "Cobalt retornou HTML ou resposta inválida."
-      });
-    }
-
-    console.log("🔵 Resposta do Cobalt:", json);
-
-    if (!json || !json.url) {
-      return res.status(400).json({
-        success: false,
-        error: json?.error || "Não foi possível obter o áudio.",
-      });
-    }
-
-    return res.json({ success: true, url: json.url });
-
-  } catch (e) {
-    console.log("❌ Erro interno:", e);
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
-      error: e.message || "Erro interno."
+      error: "Não foi possível obter áudio via Piped."
     });
   }
+
+  return res.json({ success: true, url });
 });
 
 app.listen(PORT, () =>
