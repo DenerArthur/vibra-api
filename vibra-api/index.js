@@ -8,40 +8,82 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
+//
+// ==========================================================
+// INSTÂNCIAS PIPED 2025 — MAIOR LISTA ESTÁVEL
+// ==========================================================
+const PIPED_LIST = [
+  "https://pipedapi.kavin.rocks",
+  "https://pipedapi.nadeko.net",
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.smnz.de",
+  "https://pa.il.ax",
+  "https://piped-api.garudalinux.org",
+  "https://pipedapi.in.projectsegfau.lt",
+  "https://piped-api.lunar.icu",
+  "https://pipedapi.tokhmi.xyz",
+  "https://pipedapi.drgns.space",
+  "https://pipedapi.nebulacentre.net",
+  "https://pipedapi.dedyn.io",
+];
+
+//
+// ==========================================================
+// TESTA INSTÂNCIAS ATÉ FUNCIONAR
+// ==========================================================
+async function getAudioFromPiped(videoId) {
+  for (const base of PIPED_LIST) {
+    const url = `${base}/streams/${videoId}`;
+    console.log("🔎 Testando Piped:", url);
+
+    try {
+      const r = await fetch(url, {
+        timeout: 7000,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Linux; Android 11) AppleWebKit/537.36 Chrome/120 Mobile",
+        },
+      });
+
+      if (!r.ok) {
+        console.log("❌ Instância rejeitou:", base);
+        continue;
+      }
+
+      const json = await r.json();
+
+      if (!json?.audioStreams?.length) {
+        console.log("⚠️ Sem audioStreams:", base);
+        continue;
+      }
+
+      // Ordena por maior bitrate
+      const sorted = json.audioStreams.sort(
+        (a, b) => (b.bitrate || 0) - (a.bitrate || 0)
+      );
+
+      const best = sorted[0];
+
+      if (best?.url) {
+        console.log("🎯 SUCESSO:", base);
+        return best.url;
+      }
+
+    } catch (e) {
+      console.log("💥 Erro nesta instância:", base);
+    }
+  }
+
+  return null;
+}
+
+//
+// ==========================================================
+// ROTAS
+// ==========================================================
 app.get("/", (req, res) => {
   res.json({ status: "Vibra API OK" });
 });
-
-// Instâncias Piped
-const PIPED = [
-  "https://pipedapi.adminforge.de",
-  "https://pipedapi.nadeko.net",
-  "https://pipedapi.reallyaweso.me",
-];
-
-async function getPipedAudio(videoId) {
-  for (const base of PIPED) {
-    try {
-      const r = await fetch(`${base}/streams/${videoId}`);
-      if (!r.ok) continue;
-
-      const json = await r.json();
-      console.log("🔵 PIPE RESPONSE:", json);
-
-      if (json?.audioStreams?.length) {
-        const best = json.audioStreams.sort(
-          (a, b) => b.bitrate - a.bitrate
-        )[0];
-
-        if (best?.url) return best.url;
-      }
-    } catch (e) {
-      console.log("Erro Piped:", e);
-      continue;
-    }
-  }
-  return null;
-}
 
 app.post("/audio", async (req, res) => {
   const { videoId } = req.body;
@@ -52,18 +94,25 @@ app.post("/audio", async (req, res) => {
 
   console.log("🎬 Recebido videoId:", videoId);
 
-  const url = await getPipedAudio(videoId);
+  const finalAudio = await getAudioFromPiped(videoId);
 
-  if (!url) {
-    return res.status(400).json({
+  if (!finalAudio) {
+    return res.json({
       success: false,
-      error: "Não foi possível obter áudio via Piped."
+      error: "Não foi possível obter áudio via Piped.",
     });
   }
 
-  return res.json({ success: true, url });
+  res.json({
+    success: true,
+    url: finalAudio,
+  });
 });
 
+//
+// ==========================================================
+// START SERVER
+// ==========================================================
 app.listen(PORT, () =>
   console.log(`Vibra API rodando na porta ${PORT}`)
 );
