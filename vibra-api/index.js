@@ -8,41 +8,61 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// TESTE
 app.get("/", (req, res) => {
   res.json({ status: "Vibra API OK" });
 });
 
-// ROTA PARA PEGAR ÁUDIO VIA COBALT
-app.get("/audio", async (req, res) => {
+app.post("/audio", async (req, res) => {
+  const { url } = req.body;
+
+  if (!url) {
+    return res.json({ success: false, error: "URL ausente." });
+  }
+
   try {
-    const { url } = req.query;
+    const reqBody = {
+      url,
+      downloadMode: "audio",
+      vCodec: "none"
+    };
 
-    if (!url) {
-      return res.status(400).json({ success: false, error: "Missing URL." });
-    }
-
-    const api = "https://api.cobalt.tools/api/json";
-
-    const response = await fetch(api, {
+    const r = await fetch("https://api.cobalt.tools/api/json", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        Accept: "application/json",
       },
-      body: JSON.stringify({
-        url,
-        downloadMode: "audio",
-        vCodec: "none"
-      })
+      body: JSON.stringify(reqBody),
     });
 
-    const json = await response.json();
-    return res.json(json);
+    // Tenta parsear JSON
+    let json;
+    try {
+      json = await r.json();
+    } catch {
+      return res.status(500).json({
+        success: false,
+        error: "Cobalt retornou HTML ou resposta inválida."
+      });
+    }
+
+    if (!json || !json.url) {
+      return res.status(400).json({
+        success: false,
+        error: json?.error || "Não foi possível obter o áudio.",
+      });
+    }
+
+    return res.json({ success: true, url: json.url });
 
   } catch (e) {
-    console.log("ERRO:", e);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json({
+      success: false,
+      error: e.message || "Erro interno."
+    });
   }
 });
 
-app.listen(PORT, () => console.log(`🔥 Vibra API rodando na porta ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`Vibra API rodando na porta ${PORT}`)
+);
