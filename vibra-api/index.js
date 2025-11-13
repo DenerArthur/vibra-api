@@ -39,12 +39,18 @@ app.post("/audio", async (req, res) => {
     let json;
     try {
       json = await r.json();
-    } catch {
+    } catch (e) {
+      console.log("⚠️ Cobalt retornou HTML ou resposta inválida:");
+      const text = await r.text();
+      console.log(text);
+
       return res.status(500).json({
         success: false,
         error: "Cobalt retornou HTML ou resposta inválida."
       });
     }
+
+    console.log("🔵 Resposta do Cobalt:", json);
 
     if (!json || !json.url) {
       return res.status(400).json({
@@ -56,6 +62,7 @@ app.post("/audio", async (req, res) => {
     return res.json({ success: true, url: json.url });
 
   } catch (e) {
+    console.log("❌ Erro interno:", e);
     return res.status(500).json({
       success: false,
       error: e.message || "Erro interno."
