@@ -9,26 +9,21 @@ app.use(express.json());
 const PORT = process.env.PORT || 10000;
 
 // ==========================================================
-// CONFIG AVANÇADA
+// LISTA DE INSTÂNCIAS (BACKEND POOL)
 // ==========================================================
-
-// Lista de instâncias Piped atualizada e priorizada (2025)
 const PIPED_LIST = [
-  "https://pipedapi.drgns.space",      // Geralmente a mais rápida
-  "https://pipedapi.tokhmi.xyz",       // Muito estável
-  "https://pipedapi.kavin.rocks",      // Original, boa fallback
-  "https://pa.il.ax",                  // Rápida (Europa)
-  "https://pipedapi.smnz.de",          // Estável
-  "https://piped-api.lunar.icu",       // Alternativa
-  "https://pipedapi.adminforge.de",    // Fallback
-  "https://api.piped.privacy.com.de"   // Fallback final
+  "https://pipedapi.drgns.space",
+  "https://pipedapi.tokhmi.xyz",
+  "https://pipedapi.kavin.rocks",
+  "https://pa.il.ax",
+  "https://pipedapi.smnz.de",
+  "https://piped-api.lunar.icu",
+  "https://pipedapi.adminforge.de"
 ];
 
-// Rotação de User-Agents para evitar bloqueio por "bot"
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 ];
 
 function getRandomAgent() {
@@ -36,99 +31,120 @@ function getRandomAgent() {
 }
 
 // ==========================================================
-// LÓGICA DE EXTRAÇÃO (RETRY & FAILOVER)
+// 1. FUNÇÃO: BUSCAR ID DO VÍDEO
 // ==========================================================
-async function getAudioFromPiped(videoId) {
+async function searchVideoId(query) {
+  console.log(`🔎 [Server] Buscando ID para: "${query}"`);
+  
   for (const base of PIPED_LIST) {
-    const url = `${base}/streams/${videoId}`;
-    console.log(`🔎 [Server] Tentando: ${base}`);
-
     try {
+      // Busca focada em músicas
+      const url = `${base}/search?q=${encodeURIComponent(query)}&filter=music_songs`;
+      
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const timeout = setTimeout(() => controller.abort(), 4000); // 4s timeout busca
 
       const r = await fetch(url, {
         signal: controller.signal,
-        headers: {
-          "User-Agent": getRandomAgent(),
-        },
+        headers: { "User-Agent": getRandomAgent() }
       });
-
       clearTimeout(timeout);
 
-      if (r.status === 403 || r.status === 429) {
-        console.log(`⛔ Bloqueado/RateLimit (${r.status}) em: ${base}`);
-        continue;
-      }
-
-      if (!r.ok) {
-        console.log(`❌ Erro HTTP ${r.status} em: ${base}`);
-        continue;
-      }
+      if (!r.ok) continue;
 
       const json = await r.json();
-
-      if (!json?.audioStreams?.length) {
-        console.log(`⚠️ JSON válido, mas sem 'audioStreams' em: ${base}`);
-        continue;
+      
+      // Tenta achar o primeiro item que seja um vídeo
+      if (json.items && json.items.length > 0) {
+        const item = json.items.find(i => i.url && i.url.includes("/watch?v="));
+        if (item) {
+            const id = item.url.split("watch?v=")[1];
+            console.log(`✅ ID encontrado em ${base}: ${id}`);
+            return id;
+        }
       }
-
-      // Prioridade: M4A > WebM, Maior Bitrate
-      const sorted = json.audioStreams.sort((a, b) => {
-        // Se formatos diferentes, prefira m4a (melhor compatibilidade nativa iOS/Android)
-        if (a.format === 'm4a' && b.format !== 'm4a') return -1;
-        if (a.format !== 'm4a' && b.format === 'm4a') return 1;
-        // Se formato igual, maior bitrate vence
-        return (b.bitrate || 0) - (a.bitrate || 0);
-      });
-
-      const best = sorted[0];
-
-      if (best?.url) {
-        console.log(`🎯 SUCESSO em ${base} | Bitrate: ${best.bitrate/1000}kbps | Fmt: ${best.format}`);
-        return best.url;
-      }
-
     } catch (e) {
-      console.log(`💥 Exception em ${base}: ${e.message}`);
+      // Falha silenciosa, tenta próxima instância
     }
   }
-
+  console.log("❌ Falha na busca do ID em todas as instâncias.");
   return null;
 }
 
 // ==========================================================
-// ROTAS
+// 2. FUNÇÃO: PEGAR STREAM DE ÁUDIO
 // ==========================================================
-app.get("/", (req, res) => {
-  res.json({ status: "Vibra API Online", instances: PIPED_LIST.length });
-});
+async function getAudioFromPiped(videoId) {
+  console.log(`🎵 [Server] Extraindo áudio para ID: ${videoId}`);
+  
+  for (const base of PIPED_LIST) {
+    const url = `${base}/streams/${videoId}`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6000);
 
+      const r = await fetch(url, {
+        signal: controller.signal,
+        headers: { "User-Agent": getRandomAgent() },
+      });
+      clearTimeout(timeout);
+
+      if (!r.ok) continue;
+
+      const json = await r.json();
+      if (!json?.audioStreams?.length) continue;
+
+      // Ordena: m4a primeiro, depois bitrate
+      const sorted = json.audioStreams.sort((a, b) => {
+        if (a.format === 'm4a' && b.format !== 'm4a') return -1;
+        if (a.format !== 'm4a' && b.format === 'm4a') return 1;
+        return (b.bitrate || 0) - (a.bitrate || 0);
+      });
+
+      if (sorted[0]?.url) {
+        console.log(`🎯 Áudio extraído com sucesso de: ${base}`);
+        return sorted[0].url;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+// ==========================================================
+// ROTA PRINCIPAL
+// ==========================================================
 app.post("/audio", async (req, res) => {
-  const { videoId } = req.body;
+  let { videoId, query } = req.body;
 
-  if (!videoId) {
-    return res.status(400).json({ success: false, error: "videoId missing" });
+  // 1. Se não veio videoId, tenta buscar pelo nome (query)
+  if (!videoId && query) {
+    videoId = await searchVideoId(query);
   }
 
-  console.log(`\n🎬 Request Audio: ${videoId}`);
+  if (!videoId) {
+    return res.status(404).json({ 
+      success: false, 
+      error: "Não foi possível encontrar um vídeo para essa busca." 
+    });
+  }
+
+  // 2. Com o videoId em mãos, busca o áudio
   const finalAudio = await getAudioFromPiped(videoId);
 
   if (!finalAudio) {
-    console.log("💀 FALHA TOTAL: Nenhuma instância retornou áudio.");
     return res.status(500).json({
       success: false,
-      error: "All instances failed to retrieve audio.",
+      error: "Falha ao extrair link de áudio das instâncias Piped.",
     });
   }
 
   res.json({
     success: true,
+    videoId: videoId, // Retorna o ID para o front cachear se quiser
     url: finalAudio,
   });
 });
 
-// START
-app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
-);
+app.get("/", (req, res) => res.send("Vibra API V2 (Server-Side Search) OK"));
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
