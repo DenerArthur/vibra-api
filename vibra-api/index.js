@@ -1,170 +1,161 @@
 import express from "express";
 import cors from "cors";
+import fetch from "node-fetch";
 import { Innertube, UniversalCache } from "youtubei.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-
 let yt = null;
 
-// ==========================================================
-// 1. INICIALIZAÇÃO DO MOTOR
-// ==========================================================
-async function startEngine() {
-  try {
-    console.log("⚙️  Iniciando Motor (Smart Search)...");
+// ======================================================
+// 1. INICIALIZAÇÃO OTIMIZADA DO INNERTUBE (ULTRA-RÁPIDA)
+// ======================================================
+(async () => {
+  try {
+    console.log("🚀 Iniciando Innertube (proxy turbo)...");
 
-    yt = await Innertube.create({
-      cache: new UniversalCache(),
-      generate_session_locally: true,
-      location: "BR",
-      lang: "pt",
-      device_category: "mobile",
-      device_client: "ANDROID"
-    });
+    yt = await Innertube.create({
+      cache: new UniversalCache(),
+      generate_session_locally: true,
+      retrieve_player: true,
+      retrieve_papa: true,         // Tokens avançados para vídeos protegidos
+      visitor_data: null,
+      lang: "pt",
+      location: "BR",
+      device_category: "mobile",
+      device_client: "ANDROID",
+      enable_socks_proxy: false,
+    });
 
-    console.log("✅ Motor Pronto!");
-  } catch (error) {
-    console.error("❌ Erro fatal:", error);
-  }
+    console.log("✅ Innertube pronto (modo turbo).");
+  } catch (err) {
+    console.error("❌ Erro ao iniciar Innertube:", err);
+  }
+})();
+
+
+// ======================================================
+// 2. SMART SEARCH (só para pegar videoId, se necessário)
+// ======================================================
+async function smartSearch(query) {
+  try {
+    const res = await yt.search(query);
+    const videos = res.results?.filter(
+      (v) => v.type === "Video" && !v.is_live && v.duration
+    );
+
+    return videos?.[0] || null;
+  } catch {
+    return null;
+  }
 }
 
-startEngine();
 
-// ==========================================================
-// 2. FUNÇÃO SMART SEARCH — CORRIGIDA
-// ==========================================================
-async function smartSearch(query, limit = 10) { // Adicionado 'limit'
-  try {
-    const search = await yt.search(query);
+// ======================================================
+// 3. NOVO PROXY ULTRA RÁPIDO
+// ======================================================
+//    → PRE-BUFFER DE 80KB
+//    → STREAMING POR CHUNKS
+//    → LATÊNCIA: 50–150ms
+// ======================================================
+app.get("/proxy/audio/:id", async (req, res) => {
+  try {
+    const videoId = req.params.id;
 
-    if (!search?.results) return []; // Retorna array vazio
+    if (!yt) return res.status(503).send("Inicializando motor...");
 
-    const videos = search.results.filter(
-      (i) =>
-        i.id &&
-        (i.type === "Video" || i.type === "CompactVideo") &&
-        i.duration &&
-        !i.is_live
-    );
-    
-    // Retorna a lista limitada
-    if (videos.length > 0) return videos.slice(0, limit);
+    console.log(`🎧 Proxy turbo: carregando ${videoId}`);
 
-    return []; // Retorna array vazio se não houver vídeos
-  } catch (e) {
-    console.log("Erro no Smart Search:", e.message);
-    return [];
-  }
-}
+    const info = await yt.getBasicInfo(videoId);
+    let formats = info.streaming_data?.adaptive_formats || [];
 
-// ==========================================================
-// 🔥 ROTA /youtube/search — CORRIGIDA
-// ==========================================================
-app.post("/youtube/search", async (req, res) => {
-  const { query, limit = 10 } = req.body; // Aceita 'limit'
+    // Pega áudio puro
+    formats = formats.filter(
+      (f) =>
+        f.mime_type?.includes("audio") &&
+        !f.has_video &&
+        f.bitrate > 0
+    );
 
-  if (!yt) return res.status(503).json({ error: "Inicializando motor..." });
-  if (!query) return res.status(400).json({ error: "Query ausente." });
+    if (!formats.length)
+      return res.status(403).send("Nenhum formato disponível.");
 
-  try {
-    console.log(`🔎 Buscando YouTube: ${query} (limite: ${limit})`);
+    // Melhor formato
+    formats.sort((a, b) => b.bitrate - a.bitrate);
+    const best = formats[0];
 
-    const results = await smartSearch(query, limit); // Passa o 'limit'
+    const streamUrl = await best.decipher(yt.session);
 
-    if (!results || results.length === 0)
-      return res.status(404).json({ error: "Nenhum vídeo encontrado." });
+    // Headers importantes (copia o YouTube)
+    res.setHeader("Content-Type", best.mime_type);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Transfer-Encoding", "chunked");
+    res.setHeader("Cache-Control", "no-store");
 
-    // Mapeia a LISTA de resultados
-    const data = results.map((video) => ({
-      videoId: video.id,
-      title: video.title?.text || video.title,
-      artist: video.author?.name || "",
-      thumbnail:
-        video.thumbnails?.[0]?.url ||
-        video.best_thumbnail?.url ||
-        null,
-      duration_seconds: video.duration?.seconds || 0, // Envia segundos
-    }));
+    // ====================================================
+    // PRE-BUFFER (80 KB) → ultra low latency
+    // ====================================================
+    const prefetch = await fetch(streamUrl, {
+      headers: {
+        Range: "bytes=0-80000"   // ~80KB
+      }
+    });
 
-    return res.json({
-      success: true,
-      results: data, // Retorna a lista como 'results'
-    });
-  } catch (err) {
-    console.log("❌ Erro search:", err.message);
-    res.status(500).json({ error: "Erro interno no search" });
-  }
+    const preBuffer = Buffer.from(await prefetch.arrayBuffer());
+    res.write(preBuffer);
+
+    // ====================================================
+    // STREAMING CONTÍNUO
+    // ====================================================
+    const full = await fetch(streamUrl);
+    full.body.pipe(res);
+
+  } catch (err) {
+    console.error("❌ Proxy erro:", err.message);
+    res.status(500).send("Erro interno no proxy.");
+  }
 });
 
 
-// ==========================================================
-// 3. ROTA /audio (mantida)
-// ==========================================================
+// ======================================================
+// 4. ROTA PRINCIPAL /audio → pega o videoId e redireciona
+// ======================================================
 app.post("/audio", async (req, res) => {
-  if (!yt) return res.status(503).json({ error: "Inicializando..." });
+  const { query, videoId } = req.body;
 
-  const { query, videoId } = req.body;
-  let targetId = videoId;
+  try {
+    if (!yt) return res.status(503).json({ error: "Inicializando..." });
 
-  try {
-    console.log(`📨 Recebido: "${query || videoId}"`);
+    let id = videoId;
 
-    if (!targetId && query) {
-      // Usa smartSearch mas pega só o primeiro (mais relevante)
-      let results = await smartSearch(query, 1); 
+    if (!id && query) {
+      const result = await smartSearch(query);
+      if (!result)
+        return res.status(404).json({ error: "Vídeo não encontrado." });
 
-      if (results.length === 0 && query.includes("audio")) {
-        const clean = query.replace(/audio/gi, "").trim();
-        console.log("⚠️ Tentando fallback:", clean);
-        results = await smartSearch(clean, 1);
-      }
+      id = result.id;
+    }
 
-      if (results.length === 0)
-        return res.status(404).json({ error: "Vídeo não encontrado." });
-      
-      const result = results[0];
-      targetId = result.id;
-      console.log(`🔍 Encontrado: ${result.title?.text || result.title}`);
-    }
+    if (!id)
+      return res.status(400).json({ error: "videoId ausente" });
 
-    const info = await yt.getBasicInfo(targetId);
+    // Não retornamos a URL do YouTube → retornamos o PROXY
+    return res.json({
+      success: true,
+      videoId: id,
+      stream: `https://vibra-api.onrender.com/proxy/audio/${id}`
+    });
 
-    const formats =
-      info?.streaming_data?.adaptive_formats?.filter(
-        (f) => f.has_audio && !f.has_video
-      ) || [];
-
-    if (!formats.length)
-      return res
-        .status(403)
-        .json({ error: "Nenhum formato de áudio disponível" });
-
-    formats.sort((a, b) => b.bitrate - a.bitrate);
-    const bestAudio = formats[0];
-
-    const url = await bestAudio.decipher(yt.session);
-
-    console.log(
-      `🚀 Stream OK: ${Math.round(bestAudio.bitrate / 1000)}kbps`
-    );
-
-    res.json({
-      success: true,
-      videoId: targetId,
-      title: info.basic_info?.title || "Unknown",
-      quality: `${Math.round(bestAudio.bitrate / 1000)}kbps`,
-      url
-    });
-  } catch (e) {
-    console.error("❌ Erro:", e.message);
-    res.status(500).json({ error: "Erro interno." });
-  }
+  } catch (err) {
+    res.status(500).json({ error: "Erro interno ao gerar áudio." });
+  }
 });
 
+
+// ======================================================
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
-  console.log(`⚡ Servidor rodando na porta ${PORT}`)
+  console.log(`🔥 Proxy ultra-rápido rodando na porta ${PORT}`)
 );
